@@ -1,10 +1,10 @@
 import os
 import glob
+import subprocess
 from flask import Flask, request, jsonify, render_template_string, send_file
 import static_ffmpeg
-import yt_dlp
 
-# Render par ffmpeg load karein
+# Static ffmpeg activate karein
 static_ffmpeg.add_paths()
 
 app = Flask(__name__)
@@ -105,19 +105,6 @@ HTML_PAGE = """
       border: 1px solid #3f3f46;
       text-align: center;
     }
-    .thumb {
-      width: 100%;
-      border-radius: 10px;
-      margin-bottom: 12px;
-      max-height: 200px;
-      object-fit: cover;
-    }
-    .title {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 14px;
-      color: #fafafa;
-    }
     .dl-btn {
       display: inline-block;
       width: 100%;
@@ -129,6 +116,7 @@ HTML_PAGE = """
       border-radius: 10px;
       font-weight: 600;
       font-size: 14px;
+      margin-top: 8px;
     }
     .err {
       color: #f87171;
@@ -146,21 +134,20 @@ HTML_PAGE = """
 
     <div class="input-box">
       <input type="text" id="url" placeholder="https://youtu.be/..." autocomplete="off">
-      <button id="btn" onclick="processVideo()">Download Video</button>
+      <button id="btn" onclick="startDownload()">Download Video</button>
     </div>
 
-    <div id="loader">Processing & merging video, please wait 10-20 seconds...</div>
+    <div id="loader">Video download ho rahi hai, kripya wait karein...</div>
     <div id="msg" class="err"></div>
 
     <div id="result">
-      <img id="thumb" class="thumb" src="" alt="Thumbnail">
-      <div id="vidTitle" class="title"></div>
-      <a id="downloadBtn" class="dl-btn" href="" download>Save MP4 to Device</a>
+      <p style="margin-bottom: 12px; font-size: 14px; color: #4ade80;">Video taiyar hai!</p>
+      <a id="downloadBtn" class="dl-btn" href="" download>Save MP4 File</a>
     </div>
   </div>
 
   <script>
-    async function processVideo() {
+    async function startDownload() {
       const url = document.getElementById("url").value.trim();
       const loader = document.getElementById("loader");
       const msg = document.getElementById("msg");
@@ -179,20 +166,18 @@ HTML_PAGE = """
       loader.style.display = "block";
 
       try {
-        const res = await fetch("/api/process", {
+        const res = await fetch("/api/download", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: url })
         });
         const data = await res.json();
 
-        if (res.ok && data.download_url) {
-          document.getElementById("thumb").src = data.thumbnail || "";
-          document.getElementById("vidTitle").innerText = data.title;
-          document.getElementById("downloadBtn").href = data.download_url;
+        if (res.ok && data.file_url) {
+          document.getElementById("downloadBtn").href = data.file_url;
           result.style.display = "block";
         } else {
-          msg.innerText = data.error || "Video process nahi ho saki.";
+          msg.innerText = data.error || "Download fail ho gaya.";
         }
       } catch (e) {
         msg.innerText = "Server error, dobara try karein.";
@@ -210,48 +195,44 @@ HTML_PAGE = """
 def home():
     return render_template_string(HTML_PAGE)
 
-@app.route("/api/process", methods=["POST"])
-def process():
+@app.route("/api/download", methods=["POST"])
+def download():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    # Old downloads clean karein taaki storage full na ho
+    # Purani files clean karein
     for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
         try:
             os.remove(f)
         except Exception:
             pass
 
-    out_template = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
-    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+    cookie_arg = ["--cookies", "cookies.txt"] if os.path.exists("cookies.txt") else []
 
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': out_template,
-        'merge_output_format': 'mp4',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-    }
-
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
+    # Wahi exact command jo Termux me CLI script ne run ki thi
+    cmd = [
+        "yt-dlp",
+        *cookie_arg,
+        "--no-playlist",
+        "-P", DOWNLOAD_DIR,
+        "-o", "%(id)s.%(ext)s",
+        url
+    ]
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_id = info.get("id")
-            title = info.get("title", "video")
-            thumbnail = info.get("thumbnail", "")
-
-            final_file = f"{video_id}.mp4"
-            return jsonify({
-                "title": title,
-                "thumbnail": thumbnail,
-                "download_url": f"/get-file/{final_file}"
-            })
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+        
+        # Check karein downloads folder me kaunsi file bani
+        files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
+        if files:
+            filename = os.path.basename(files[0])
+            return jsonify({"file_url": f"/get-file/{filename}"})
+        else:
+            return jsonify({"error": proc.stderr or "Download process nahi ho paya"}), 400
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Request timed out"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 

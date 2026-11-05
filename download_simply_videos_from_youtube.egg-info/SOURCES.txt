@@ -1,0 +1,10 @@
+download.py
+license.md
+pyproject.toml
+readme.md
+download_simply_videos_from_youtube.egg-info/PKG-INFO
+download_simply_videos_from_youtube.egg-info/SOURCES.txt
+download_simply_videos_from_youtube.egg-info/dependency_links.txt
+download_simply_videos_from_youtube.egg-info/entry_points.txt
+download_simply_videos_from_youtube.egg-info/requires.txt
+download_simply_videos_from_youtube.egg-info/top_level.txt

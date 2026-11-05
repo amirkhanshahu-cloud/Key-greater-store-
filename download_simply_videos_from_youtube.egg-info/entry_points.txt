@@ -1,0 +1,2 @@
+[console_scripts]
+download-youtube-videos = download:main
