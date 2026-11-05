@@ -209,50 +209,55 @@ def get_info():
     if not url:
         return jsonify({"error": "URL nahi mila"}), 400
 
+    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+
+    # Format ko strict filter na dekar loose extraction karein
     ydl_opts = {
-        'format': 'best/bestvideo+bestaudio/worst',
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None
+        'extract_flat': False
     }
+
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # Agar playlist ka result ho toh pehla entry uthayein
             if 'entries' in info and len(info['entries']) > 0:
                 info = info['entries'][0]
 
             formats = info.get('formats', [])
             download_url = None
 
-            # 1. Pehle direct audio + video stream dekhein
-            combined = [
+            # 1. Sabse pehle combined stream (Audio + Video saath me) dekhein
+            audio_video_formats = [
                 f for f in formats 
                 if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('url')
             ]
-            if combined:
-                # Highest resolution format chunein
-                best = max(combined, key=lambda x: (x.get('height') or 0, x.get('tbr') or 0))
-                download_url = best.get('url')
 
-            # 2. Agar combined na mile toh root level URL use karein
-            if not download_url:
+            if audio_video_formats:
+                # Sabse best resolution pick karein
+                audio_video_formats.sort(key=lambda x: (x.get('height') or 0, x.get('tbr') or 0), reverse=True)
+                download_url = audio_video_formats[0].get('url')
+
+            # 2. Agar combined na mile toh root URL dekhein
+            if not download_url and info.get('url'):
                 download_url = info.get('url')
 
-            # 3. Agar abhi bhi na mile toh kisi bhi valid url format ko fallback banayein
+            # 3. Fallback: Koi bhi stream jisme valid url ho
             if not download_url and formats:
-                valid_formats = [f.get('url') for f in formats if f.get('url')]
+                valid_formats = [f for f in formats if f.get('url')]
                 if valid_formats:
-                    download_url = valid_formats[-1]
+                    download_url = valid_formats[-1].get('url')
 
             if not download_url:
-                return jsonify({"error": "Direct streaming link available nahi hai."}), 400
+                return jsonify({"error": "Direct stream link nahi mila."}), 400
 
             return jsonify({
-                "title": info.get("title", "Video"),
+                "title": info.get("title", "YouTube Video"),
                 "thumbnail": info.get("thumbnail", ""),
                 "download_url": download_url
             })
