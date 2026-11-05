@@ -4,7 +4,6 @@ import subprocess
 from flask import Flask, request, jsonify, render_template_string, send_file
 import static_ffmpeg
 
-# Static ffmpeg activate karein
 static_ffmpeg.add_paths()
 
 app = Flask(__name__)
@@ -137,11 +136,11 @@ HTML_PAGE = """
       <button id="btn" onclick="startDownload()">Download Video</button>
     </div>
 
-    <div id="loader">Video download ho rahi hai, kripya wait karein...</div>
+    <div id="loader">Processing video via Android engine, please wait...</div>
     <div id="msg" class="err"></div>
 
     <div id="result">
-      <p style="margin-bottom: 12px; font-size: 14px; color: #4ade80;">Video taiyar hai!</p>
+      <p style="margin-bottom: 12px; font-size: 14px; color: #4ade80;">Video download ready!</p>
       <a id="downloadBtn" class="dl-btn" href="" download>Save MP4 File</a>
     </div>
   </div>
@@ -180,7 +179,7 @@ HTML_PAGE = """
           msg.innerText = data.error || "Download fail ho gaya.";
         }
       } catch (e) {
-        msg.innerText = "Server error, dobara try karein.";
+        msg.innerText = "Server response error, please retry.";
       } finally {
         loader.style.display = "none";
         btn.disabled = false;
@@ -202,7 +201,7 @@ def download():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    # Purani files clean karein
+    # Purani files clear karein
     for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
         try:
             os.remove(f)
@@ -211,10 +210,13 @@ def download():
 
     cookie_arg = ["--cookies", "cookies.txt"] if os.path.exists("cookies.txt") else []
 
-    # Wahi exact command jo Termux me CLI script ne run ki thi
+    # 429 block bypass karne ke liye Android client aur fallback formats
     cmd = [
         "yt-dlp",
         *cookie_arg,
+        "--extractor-args", "youtube:player_client=android,ios",
+        "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+        "--merge-output-format", "mp4",
         "--no-playlist",
         "-P", DOWNLOAD_DIR,
         "-o", "%(id)s.%(ext)s",
@@ -224,7 +226,6 @@ def download():
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
         
-        # Check karein downloads folder me kaunsi file bani
         files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
         if files:
             filename = os.path.basename(files[0])
