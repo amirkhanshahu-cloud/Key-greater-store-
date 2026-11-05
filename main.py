@@ -1,6 +1,6 @@
 import os
-import requests
 from flask import Flask, request, jsonify, render_template_string
+import yt_dlp
 
 app = Flask(__name__)
 
@@ -97,6 +97,19 @@ HTML_PAGE = """
       border: 1px solid #3f3f46;
       text-align: center;
     }
+    .thumb {
+      width: 100%;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      max-height: 200px;
+      object-fit: cover;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #fafafa;
+    }
     .dl-btn {
       display: inline-block;
       width: 100%;
@@ -108,7 +121,6 @@ HTML_PAGE = """
       border-radius: 10px;
       font-weight: 600;
       font-size: 14px;
-      margin-top: 8px;
     }
     .err {
       color: #f87171;
@@ -125,7 +137,7 @@ HTML_PAGE = """
     <p class="sub">Paste YouTube video link to download instantly</p>
 
     <div class="input-box">
-      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+      <input type="text" id="url" placeholder="https://youtu.be/..." autocomplete="off">
       <button id="btn" onclick="fetchVideo()">Get Download Link</button>
     </div>
 
@@ -133,7 +145,8 @@ HTML_PAGE = """
     <div id="msg" class="err"></div>
 
     <div id="result">
-      <p style="margin-bottom: 12px; font-size: 14px; color: #4ade80;">Video taiyar hai!</p>
+      <img id="thumb" class="thumb" src="" alt="Thumbnail">
+      <div id="vidTitle" class="title"></div>
       <a id="downloadBtn" class="dl-btn" href="" target="_blank" rel="noopener noreferrer">Download Video Now</a>
     </div>
   </div>
@@ -166,6 +179,8 @@ HTML_PAGE = """
         const data = await res.json();
 
         if (res.ok && data.download_url) {
+          document.getElementById("thumb").src = data.thumbnail || "";
+          document.getElementById("vidTitle").innerText = data.title;
           document.getElementById("downloadBtn").href = data.download_url;
           result.style.display = "block";
         } else {
@@ -194,32 +209,23 @@ def get_info():
     if not url:
         return jsonify({"error": "URL nahi mila"}), 400
 
-    api_endpoints = [
-        "https://api.cobalt.tools/api/json",
-        "https://cobalt-api.kwiatekm.tokyo/api/json"
-    ]
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "url": url,
-        "vQuality": "720"
+    ydl_opts = {
+        'format': 'best[ext=mp4]/best',
+        'quiet': True,
+        'no_warnings': True,
+        'cookiefile': 'cookies.txt'
     }
 
-    for endpoint in api_endpoints:
-        try:
-            r = requests.post(endpoint, json=payload, headers=headers, timeout=12)
-            res_data = r.json()
-            if "url" in res_data:
-                return jsonify({"download_url": res_data["url"]})
-            elif res_data.get("status") in ["stream", "redirect"]:
-                return jsonify({"download_url": res_data.get("url")})
-        except Exception:
-            continue
-
-    return jsonify({"error": "Video download URL generate nahi ho paya. URL check karein."}), 400
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return jsonify({
+                "title": info.get("title", "Video"),
+                "thumbnail": info.get("thumbnail", ""),
+                "download_url": info.get("url")
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
