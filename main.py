@@ -1,6 +1,6 @@
 import os
+import requests
 from flask import Flask, request, jsonify, render_template_string
-import yt_dlp
 
 app = Flask(__name__)
 
@@ -10,7 +10,7 @@ HTML_PAGE = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YouTube Media Downloader</title>
+  <title>Video Downloader</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -28,13 +28,13 @@ HTML_PAGE = """
     }
     .card {
       width: 100%;
-      max-width: 520px;
-      background: rgba(24, 24, 27, 0.85);
+      max-width: 500px;
+      background: rgba(24, 24, 27, 0.9);
       backdrop-filter: blur(16px);
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 20px;
-      padding: 32px 28px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      padding: 32px 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
     }
     h1 {
       font-size: 24px;
@@ -65,7 +65,6 @@ HTML_PAGE = """
       color: #fff;
       font-size: 14px;
       outline: none;
-      transition: all 0.2s;
     }
     input:focus {
       border-color: #6366f1;
@@ -80,9 +79,7 @@ HTML_PAGE = """
       font-weight: 600;
       font-size: 14px;
       cursor: pointer;
-      transition: transform 0.1s ease, opacity 0.2s ease;
     }
-    button:active { transform: scale(0.98); }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     #loader {
       display: none;
@@ -98,23 +95,10 @@ HTML_PAGE = """
       border-radius: 14px;
       padding: 16px;
       border: 1px solid #3f3f46;
-    }
-    .thumb {
-      width: 100%;
-      border-radius: 10px;
-      object-fit: cover;
-      margin-bottom: 12px;
-      max-height: 220px;
-    }
-    .title {
-      font-size: 14px;
-      font-weight: 600;
-      line-height: 1.4;
-      margin-bottom: 14px;
-      color: #fafafa;
+      text-align: center;
     }
     .dl-btn {
-      display: block;
+      display: inline-block;
       width: 100%;
       text-align: center;
       text-decoration: none;
@@ -123,7 +107,8 @@ HTML_PAGE = """
       padding: 12px;
       border-radius: 10px;
       font-weight: 600;
-      font-size: 13px;
+      font-size: 14px;
+      margin-top: 8px;
     }
     .err {
       color: #f87171;
@@ -144,13 +129,12 @@ HTML_PAGE = """
       <button id="btn" onclick="fetchVideo()">Get Download Link</button>
     </div>
 
-    <div id="loader">Fetching video details, please wait...</div>
+    <div id="loader">Fetching video, please wait...</div>
     <div id="msg" class="err"></div>
 
     <div id="result">
-      <img id="thumb" class="thumb" src="" alt="Thumbnail">
-      <div id="vidTitle" class="title"></div>
-      <a id="downloadBtn" class="dl-btn" href="" target="_blank" rel="noopener noreferrer">Download Video</a>
+      <p style="margin-bottom: 12px; font-size: 14px; color: #4ade80;">Video taiyar hai!</p>
+      <a id="downloadBtn" class="dl-btn" href="" target="_blank" rel="noopener noreferrer">Download Video Now</a>
     </div>
   </div>
 
@@ -166,7 +150,7 @@ HTML_PAGE = """
       result.style.display = "none";
 
       if (!url) {
-        msg.innerText = "Please enter a valid URL!";
+        msg.innerText = "Kripya YouTube URL dalein!";
         return;
       }
 
@@ -182,15 +166,13 @@ HTML_PAGE = """
         const data = await res.json();
 
         if (res.ok && data.download_url) {
-          document.getElementById("thumb").src = data.thumbnail || "";
-          document.getElementById("vidTitle").innerText = data.title;
           document.getElementById("downloadBtn").href = data.download_url;
           result.style.display = "block";
         } else {
-          msg.innerText = data.error || "Could not retrieve download link.";
+          msg.innerText = data.error || "Video link fetch nahi ho payi.";
         }
       } catch (e) {
-        msg.innerText = "Server connection error.";
+        msg.innerText = "Server error, dobara koshish karein.";
       } finally {
         loader.style.display = "none";
         btn.disabled = false;
@@ -210,35 +192,34 @@ def get_info():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
     if not url:
-        return jsonify({"error": "No URL provided"}), 400
+        return jsonify({"error": "URL nahi mila"}), 400
 
-    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+    api_endpoints = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwiatekm.tokyo/api/json"
+    ]
 
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'quiet': True,
-        'no_warnings': True,
-        # Android client bypass blockings better
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios']
-            }
-        }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": url,
+        "vQuality": "720"
     }
 
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
+    for endpoint in api_endpoints:
+        try:
+            r = requests.post(endpoint, json=payload, headers=headers, timeout=12)
+            res_data = r.json()
+            if "url" in res_data:
+                return jsonify({"download_url": res_data["url"]})
+            elif res_data.get("status") in ["stream", "redirect"]:
+                return jsonify({"download_url": res_data.get("url")})
+        except Exception:
+            continue
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return jsonify({
-                "title": info.get("title", "Video"),
-                "thumbnail": info.get("thumbnail", ""),
-                "download_url": info.get("url")
-            })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    return jsonify({"error": "Video download URL generate nahi ho paya. URL check karein."}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
