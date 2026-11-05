@@ -130,6 +130,7 @@ HTML_PAGE = """
       font-size: 13px;
       text-align: center;
       margin-top: 14px;
+      line-height: 1.4;
     }
   </style>
 </head>
@@ -211,11 +212,22 @@ def get_info():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
+    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
+        # Android client bypass blockings better
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios']
+            }
+        }
     }
+
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
