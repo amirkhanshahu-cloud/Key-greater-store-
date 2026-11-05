@@ -1,6 +1,8 @@
 import os
 import re
-import requests
+import json
+import urllib.request
+import urllib.parse
 from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -185,10 +187,10 @@ HTML_PAGE = """
           document.getElementById("downloadBtn").href = data.download_url;
           result.style.display = "block";
         } else {
-          msg.innerText = data.error || "Video download link generate nahi ho paya.";
+          msg.innerText = data.error || "Video link generate nahi ho paya.";
         }
       } catch (e) {
-        msg.innerText = "Server connection error.";
+        msg.innerText = "Server response error, dobara try karein.";
       } finally {
         loader.style.display = "none";
         btn.disabled = false;
@@ -217,43 +219,28 @@ def get_info():
 
     vid_id = extract_id(url)
     if not vid_id:
-        return jsonify({"error": "Aapka link valid YouTube link nahi hai"}), 400
+        return jsonify({"error": "Valid YouTube link dalein"}), 400
 
-    # High speed YouTube fetcher endpoints
     try:
-        api_url = f"https://api.vkrdownloader.workers.dev/server?v={url}"
-        r = requests.get(api_url, timeout=10)
-        res = r.json()
+        api_endpoint = f"https://api.vkrdownloader.workers.dev/server?v={urllib.parse.quote(url)}"
+        req = urllib.request.Request(api_endpoint, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res = json.loads(response.read().decode())
 
-        if res.get("data") and res["data"].get("downloads"):
-            downloads = res["data"]["downloads"]
-            # Video stream filter (mp4 preferred)
-            mp4_formats = [d for d in downloads if d.get("format_id") and "mp4" in d.get("format_id", "").lower() and d.get("url")]
-            download_url = mp4_formats[0]["url"] if mp4_formats else downloads[0].get("url")
+            if res.get("data") and res["data"].get("downloads"):
+                downloads = res["data"]["downloads"]
+                mp4_formats = [d for d in downloads if d.get("format_id") and "mp4" in d.get("format_id", "").lower() and d.get("url")]
+                download_url = mp4_formats[0]["url"] if mp4_formats else downloads[0].get("url")
 
-            return jsonify({
-                "title": res["data"].get("title", "YouTube Video"),
-                "thumbnail": res["data"].get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"),
-                "download_url": download_url
-            })
+                return jsonify({
+                    "title": res["data"].get("title", "YouTube Video"),
+                    "thumbnail": res["data"].get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"),
+                    "download_url": download_url
+                })
     except Exception:
         pass
 
-    # Fallback endpoint
-    try:
-        api_url2 = f"https://yt-api-service.onrender.com/download?id={vid_id}"
-        r2 = requests.get(api_url2, timeout=8)
-        res2 = r2.json()
-        if res2.get("url"):
-            return jsonify({
-                "title": res2.get("title", "YouTube Video"),
-                "thumbnail": f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg",
-                "download_url": res2.get("url")
-            })
-    except Exception:
-        pass
-
-    return jsonify({"error": "YouTube ke server ne is video ka format block kiya hua hai. Dusra link try karein."}), 400
+    return jsonify({"error": "Video download link fetch nahi ho paya. Dusra link try karein."}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
