@@ -1,6 +1,7 @@
 import os
+import re
+import requests
 from flask import Flask, request, jsonify, render_template_string
-import yt_dlp
 
 app = Flask(__name__)
 
@@ -184,10 +185,10 @@ HTML_PAGE = """
           document.getElementById("downloadBtn").href = data.download_url;
           result.style.display = "block";
         } else {
-          msg.innerText = data.error || "Video link fetch nahi ho payi.";
+          msg.innerText = data.error || "Video download link generate nahi ho paya.";
         }
       } catch (e) {
-        msg.innerText = "Server error, dobara koshish karein.";
+        msg.innerText = "Server connection error.";
       } finally {
         loader.style.display = "none";
         btn.disabled = false;
@@ -198,6 +199,11 @@ HTML_PAGE = """
 </html>
 """
 
+def extract_id(url):
+    pattern = r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
+
 @app.route("/")
 def home():
     return render_template_string(HTML_PAGE)
@@ -207,62 +213,47 @@ def get_info():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
     if not url:
-        return jsonify({"error": "URL nahi mila"}), 400
+        return jsonify({"error": "URL provide karein"}), 400
 
-    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+    vid_id = extract_id(url)
+    if not vid_id:
+        return jsonify({"error": "Aapka link valid YouTube link nahi hai"}), 400
 
-    # Format ko strict filter na dekar loose extraction karein
-    ydl_opts = {
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False
-    }
-
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
-
+    # High speed YouTube fetcher endpoints
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if 'entries' in info and len(info['entries']) > 0:
-                info = info['entries'][0]
+        api_url = f"https://api.vkrdownloader.workers.dev/server?v={url}"
+        r = requests.get(api_url, timeout=10)
+        res = r.json()
 
-            formats = info.get('formats', [])
-            download_url = None
-
-            # 1. Sabse pehle combined stream (Audio + Video saath me) dekhein
-            audio_video_formats = [
-                f for f in formats 
-                if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('url')
-            ]
-
-            if audio_video_formats:
-                # Sabse best resolution pick karein
-                audio_video_formats.sort(key=lambda x: (x.get('height') or 0, x.get('tbr') or 0), reverse=True)
-                download_url = audio_video_formats[0].get('url')
-
-            # 2. Agar combined na mile toh root URL dekhein
-            if not download_url and info.get('url'):
-                download_url = info.get('url')
-
-            # 3. Fallback: Koi bhi stream jisme valid url ho
-            if not download_url and formats:
-                valid_formats = [f for f in formats if f.get('url')]
-                if valid_formats:
-                    download_url = valid_formats[-1].get('url')
-
-            if not download_url:
-                return jsonify({"error": "Direct stream link nahi mila."}), 400
+        if res.get("data") and res["data"].get("downloads"):
+            downloads = res["data"]["downloads"]
+            # Video stream filter (mp4 preferred)
+            mp4_formats = [d for d in downloads if d.get("format_id") and "mp4" in d.get("format_id", "").lower() and d.get("url")]
+            download_url = mp4_formats[0]["url"] if mp4_formats else downloads[0].get("url")
 
             return jsonify({
-                "title": info.get("title", "YouTube Video"),
-                "thumbnail": info.get("thumbnail", ""),
+                "title": res["data"].get("title", "YouTube Video"),
+                "thumbnail": res["data"].get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"),
                 "download_url": download_url
             })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    except Exception:
+        pass
+
+    # Fallback endpoint
+    try:
+        api_url2 = f"https://yt-api-service.onrender.com/download?id={vid_id}"
+        r2 = requests.get(api_url2, timeout=8)
+        res2 = r2.json()
+        if res2.get("url"):
+            return jsonify({
+                "title": res2.get("title", "YouTube Video"),
+                "thumbnail": f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg",
+                "download_url": res2.get("url")
+            })
+    except Exception:
+        pass
+
+    return jsonify({"error": "YouTube ke server ne is video ka format block kiya hua hai. Dusra link try karein."}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
