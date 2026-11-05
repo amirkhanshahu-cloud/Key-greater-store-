@@ -210,7 +210,6 @@ def get_info():
         return jsonify({"error": "URL nahi mila"}), 400
 
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
         'cookiefile': 'cookies.txt'
@@ -219,10 +218,30 @@ def get_info():
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            
+            download_url = None
+            formats = info.get('formats', [])
+
+            # Audio + Video dono format waale progressive links kholein
+            progressive_formats = [
+                f for f in formats 
+                if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('url')
+            ]
+
+            if progressive_formats:
+                # Sabse highest quality chunein
+                best_format = max(progressive_formats, key=lambda f: f.get('height') or 0)
+                download_url = best_format.get('url')
+            else:
+                download_url = info.get('url')
+
+            if not download_url:
+                return jsonify({"error": "Direct download URL nahi mila."}), 400
+
             return jsonify({
                 "title": info.get("title", "Video"),
                 "thumbnail": info.get("thumbnail", ""),
-                "download_url": info.get("url")
+                "download_url": download_url
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 400
