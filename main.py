@@ -1,11 +1,16 @@
 import os
-import re
-import json
-import urllib.request
-import urllib.parse
-from flask import Flask, request, jsonify, render_template_string
+import glob
+from flask import Flask, request, jsonify, render_template_string, send_file
+import static_ffmpeg
+import yt_dlp
+
+# Render par ffmpeg load karein
+static_ffmpeg.add_paths()
 
 app = Flask(__name__)
+
+DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -13,7 +18,7 @@ HTML_PAGE = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Video Downloader</title>
+  <title>YouTube Downloader</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -110,7 +115,7 @@ HTML_PAGE = """
     .title {
       font-size: 14px;
       font-weight: 600;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
       color: #fafafa;
     }
     .dl-btn {
@@ -137,25 +142,25 @@ HTML_PAGE = """
 <body>
   <div class="card">
     <h1>Video Downloader</h1>
-    <p class="sub">Paste YouTube video link to download instantly</p>
+    <p class="sub">Paste YouTube video link to download MP4</p>
 
     <div class="input-box">
       <input type="text" id="url" placeholder="https://youtu.be/..." autocomplete="off">
-      <button id="btn" onclick="fetchVideo()">Get Download Link</button>
+      <button id="btn" onclick="processVideo()">Download Video</button>
     </div>
 
-    <div id="loader">Fetching video, please wait...</div>
+    <div id="loader">Processing & merging video, please wait 10-20 seconds...</div>
     <div id="msg" class="err"></div>
 
     <div id="result">
       <img id="thumb" class="thumb" src="" alt="Thumbnail">
       <div id="vidTitle" class="title"></div>
-      <a id="downloadBtn" class="dl-btn" href="" target="_blank" rel="noopener noreferrer">Download Video Now</a>
+      <a id="downloadBtn" class="dl-btn" href="" download>Save MP4 to Device</a>
     </div>
   </div>
 
   <script>
-    async function fetchVideo() {
+    async function processVideo() {
       const url = document.getElementById("url").value.trim();
       const loader = document.getElementById("loader");
       const msg = document.getElementById("msg");
@@ -174,7 +179,7 @@ HTML_PAGE = """
       loader.style.display = "block";
 
       try {
-        const res = await fetch("/api/info", {
+        const res = await fetch("/api/process", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: url })
@@ -187,10 +192,10 @@ HTML_PAGE = """
           document.getElementById("downloadBtn").href = data.download_url;
           result.style.display = "block";
         } else {
-          msg.innerText = data.error || "Video link generate nahi ho paya.";
+          msg.innerText = data.error || "Video process nahi ho saki.";
         }
       } catch (e) {
-        msg.innerText = "Server response error, dobara try karein.";
+        msg.innerText = "Server error, dobara try karein.";
       } finally {
         loader.style.display = "none";
         btn.disabled = false;
@@ -201,46 +206,61 @@ HTML_PAGE = """
 </html>
 """
 
-def extract_id(url):
-    pattern = r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})'
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
-
 @app.route("/")
 def home():
     return render_template_string(HTML_PAGE)
 
-@app.route("/api/info", methods=["POST"])
-def get_info():
+@app.route("/api/process", methods=["POST"])
+def process():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
     if not url:
-        return jsonify({"error": "URL provide karein"}), 400
+        return jsonify({"error": "No URL provided"}), 400
 
-    vid_id = extract_id(url)
-    if not vid_id:
-        return jsonify({"error": "Valid YouTube link dalein"}), 400
+    # Old downloads clean karein taaki storage full na ho
+    for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+    out_template = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
+    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") else None
+
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': out_template,
+        'merge_output_format': 'mp4',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
+
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
 
     try:
-        api_endpoint = f"https://api.vkrdownloader.workers.dev/server?v={urllib.parse.quote(url)}"
-        req = urllib.request.Request(api_endpoint, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            res = json.loads(response.read().decode())
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_id = info.get("id")
+            title = info.get("title", "video")
+            thumbnail = info.get("thumbnail", "")
 
-            if res.get("data") and res["data"].get("downloads"):
-                downloads = res["data"]["downloads"]
-                mp4_formats = [d for d in downloads if d.get("format_id") and "mp4" in d.get("format_id", "").lower() and d.get("url")]
-                download_url = mp4_formats[0]["url"] if mp4_formats else downloads[0].get("url")
+            final_file = f"{video_id}.mp4"
+            return jsonify({
+                "title": title,
+                "thumbnail": thumbnail,
+                "download_url": f"/get-file/{final_file}"
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-                return jsonify({
-                    "title": res["data"].get("title", "YouTube Video"),
-                    "thumbnail": res["data"].get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"),
-                    "download_url": download_url
-                })
-    except Exception:
-        pass
-
-    return jsonify({"error": "Video download link fetch nahi ho paya. Dusra link try karein."}), 400
+@app.route("/get-file/<filename>")
+def get_file(filename):
+    file_path = os.path.join(DOWNLOAD_DIR, filename)
+    if os.path.exists(file_path):
+        return send_file(file_path, as_attachment=True)
+    return "File not found", 404
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
