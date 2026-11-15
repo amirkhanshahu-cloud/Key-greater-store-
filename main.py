@@ -1,8 +1,14 @@
 import os
-from flask import Flask, render_template_string, request, redirect
+import math
+import glob
+import shutil
+import tempfile
+import subprocess
+from flask import Flask, render_template_string, request, redirect, jsonify
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+import imageio_ffmpeg
 
 app = Flask(__name__)
 
@@ -14,6 +20,7 @@ cloudinary.config(
 )
 
 PASSWORD_PROTECT = "809047"
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 # --- MODERN UI TEMPLATES ---
 HTML_MAIN = """
@@ -138,13 +145,23 @@ HTML_MAIN = """
             border-radius: 12px;
             padding: 14px;
             text-align: center;
-            margin-bottom: 14px;
+            margin-bottom: 10px;
             background: rgba(15, 23, 42, 0.5);
         }
         input[type="file"] {
             width: 100%;
             color: var(--muted);
             font-size: 13px;
+        }
+        .detect-info {
+            font-size: 12px;
+            color: #60a5fa;
+            margin-bottom: 12px;
+            display: none;
+            background: rgba(59, 130, 246, 0.1);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(59, 130, 246, 0.25);
         }
         .btn-upload {
             width: 100%;
@@ -281,12 +298,13 @@ HTML_MAIN = """
     <div class="upload-card">
         <div class="card-title">
             <span>Upload New Video</span>
-            <span class="chunk-tag">100MB+ Chunk Mode</span>
+            <span class="chunk-tag">Auto-Split > 95MB</span>
         </div>
-        <input type="text" id="customName" class="input-field" placeholder="Custom Video Name (optional)">
+        <input type="text" id="customName" class="input-field" placeholder="Video Name (e.g. Movie)">
         <div class="file-box">
-            <input type="file" id="fileInput" accept="video/*">
+            <input type="file" id="fileInput" accept="video/*" onchange="checkFileSize()">
         </div>
+        <div id="detectInfo" class="detect-info"></div>
         <div class="progress-container" id="progCont"><div class="progress-bar" id="progBar"></div></div>
         <div id="statusText"></div>
         <button id="upBtn" onclick="startUpload()" class="btn-upload">UPLOAD TO CLOUD</button>
@@ -318,66 +336,98 @@ HTML_MAIN = """
 </div>
 
 <script>
+const LIMIT_MB = 95;
+const LIMIT_BYTES = LIMIT_MB * 1024 * 1024;
+
+function checkFileSize() {
+    const file = document.getElementById('fileInput').files[0];
+    const info = document.getElementById('detectInfo');
+    if (!file) { info.style.display = 'none'; return; }
+
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+    const baseName = document.getElementById('customName').value.trim() || file.name.replace(/\.[^/.]+$/, "");
+    info.style.display = 'block';
+
+    if (file.size <= LIMIT_BYTES) {
+        info.innerHTML = `✅ Size: <b>${sizeMB} MB</b> (100MB se kam hai — Seedha Direct Upload hoga)`;
+    } else {
+        const parts = Math.ceil(file.size / (90 * 1024 * 1024));
+        let names = [];
+        for (let i = 1; i <= parts; i++) names.push(`${baseName}_p${i}`);
+        info.innerHTML = `⚡ Size: <b>${sizeMB} MB</b> (100MB se badi hai — Auto Split hokar <b>${parts} parts</b> banenge: ${names.join(', ')})`;
+    }
+}
+
 async function startUpload() {
     const file = document.getElementById('fileInput').files[0];
-    const name = document.getElementById('customName').value.trim();
+    const customName = document.getElementById('customName').value.trim();
     const btn = document.getElementById('upBtn');
     if (!file) { alert("File chuniye!"); return; }
 
     btn.disabled = true;
     document.getElementById('progCont').style.display = 'block';
 
-    const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
-    const totalSize = file.size;
-    const uniqueUploadId = "uqid-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9);
-    let start = 0;
+    // CASE 1: <= 95 MB -> Direct Upload to Cloudinary
+    if (file.size <= LIMIT_BYTES) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', 'ml_default');
+        if (customName) formData.append('public_id', customName);
 
-    function uploadChunk(chunkBlob, startByte, endByte) {
-        return new Promise((resolve, reject) => {
-            const formData = new FormData();
-            formData.append('file', chunkBlob, file.name);
-            formData.append('upload_preset', 'ml_default');
-            if (name) formData.append('public_id', name);
-
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', 'https://api.cloudinary.com/v1_1/dntmgunma/video/upload');
-            xhr.setRequestHeader('X-Unique-Upload-Id', uniqueUploadId);
-            xhr.setRequestHeader('Content-Range', `bytes ${startByte}-${endByte - 1}/${totalSize}`);
-
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const uploadedSoFar = startByte + e.loaded;
-                    const percent = Math.min(100, Math.round((uploadedSoFar / totalSize) * 100));
-                    document.getElementById('progBar').style.width = percent + '%';
-                    document.getElementById('statusText').innerText = percent + '% Uploading (' + (uploadedSoFar / (1024*1024)).toFixed(1) + ' MB / ' + (totalSize / (1024*1024)).toFixed(1) + ' MB)...';
-                }
-            };
-
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(JSON.parse(xhr.responseText));
-                } else {
-                    reject(xhr.responseText);
-                }
-            };
-            xhr.onerror = () => reject("Network Error");
-            xhr.send(formData);
-        });
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'https://api.cloudinary.com/v1_1/dntmgunma/video/upload');
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                document.getElementById('progBar').style.width = percent + '%';
+                document.getElementById('statusText').innerText = percent + '% Direct Uploading...';
+            }
+        };
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                alert("Direct Upload Complete!");
+                location.reload();
+            } else {
+                alert("Upload Failed: " + xhr.responseText);
+                btn.disabled = false;
+            }
+        };
+        xhr.onerror = () => { alert("Network Error"); btn.disabled = false; };
+        xhr.send(formData);
+        return;
     }
 
-    try {
-        while (start < totalSize) {
-            const end = Math.min(start + CHUNK_SIZE, totalSize);
-            const chunk = file.slice(start, end);
-            await uploadChunk(chunk, start, end);
-            start = end;
+    // CASE 2: > 95 MB -> Send to Server to Auto-Split into p1, p2, p3... & Upload
+    const baseName = customName || file.name.replace(/\.[^/.]+$/, "");
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('base_name', baseName);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/split-upload');
+    xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            document.getElementById('progBar').style.width = percent + '%';
+            if (percent < 100) {
+                document.getElementById('statusText').innerText = `Step 1/2: File bhej rahe hain (${percent}%)...`;
+            } else {
+                document.getElementById('statusText').innerText = `Step 2/2: Video ko p1, p2, p3 parts mein tod kar Cloud par upload kar rahe hain (Wait karein)...`;
+            }
         }
-        alert("Upload Complete!");
-        location.reload();
-    } catch (err) {
-        alert("Upload Failed: " + err);
-        btn.disabled = false;
-    }
+    };
+    xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+            const res = JSON.parse(xhr.responseText);
+            alert("Success! Uploaded Parts: " + res.parts.join(", "));
+            location.reload();
+        } else {
+            alert("Split Upload Error: " + xhr.responseText);
+            btn.disabled = false;
+        }
+    };
+    xhr.onerror = () => { alert("Server Connection Error"); btn.disabled = false; };
+    xhr.send(formData);
 }
 </script>
 </body>
@@ -490,6 +540,69 @@ def index():
         return render_template_string(HTML_MAIN, videos=videos, q=query, next_cursor=next_cursor)
     except Exception as e:
         return f"Error loading videos: {e}"
+
+@app.route('/split-upload', methods=['POST'])
+def split_upload():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file received"}), 400
+    
+    file = request.files['file']
+    base_name = request.form.get('base_name', 'Video').strip()
+    base_name = "".join(c for c in base_name if c.isalnum() or c in ('-', '_')).strip() or "Video"
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        input_path = os.path.join(tmp_dir, "input.mp4")
+        file.save(input_path)
+
+        total_size = os.path.getsize(input_path)
+        # Calculate number of parts (~90MB each so every part is safely < 100MB)
+        num_parts = max(2, math.ceil(total_size / (90 * 1024 * 1024)))
+
+        # Get total video duration using ffmpeg
+        probe = subprocess.run([FFMPEG_PATH, "-i", input_path], stderr=subprocess.PIPE, text=True)
+        duration = 0
+        for line in probe.stderr.splitlines():
+            if "Duration:" in line:
+                t_str = line.split("Duration:")[1].split(",")[0].strip()
+                h, m, s = t_str.split(":")
+                duration = int(h) * 3600 + int(m) * 60 + float(s)
+                break
+
+        part_duration = math.ceil(duration / num_parts) if duration > 0 else 600
+        uploaded_parts = []
+
+        for i in range(num_parts):
+            start_sec = i * part_duration
+            part_name = f"{base_name}_p{i + 1}"
+            out_path = os.path.join(tmp_dir, f"{part_name}.mp4")
+
+            cmd = [
+                FFMPEG_PATH, "-y",
+                "-ss", str(start_sec),
+                "-i", input_path,
+                "-t", str(part_duration),
+                "-c", "copy",
+                "-avoid_negative_ts", "1",
+                out_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+                cloudinary.uploader.upload(
+                    out_path,
+                    resource_type="video",
+                    public_id=part_name,
+                    overwrite=True
+                )
+                uploaded_parts.append(part_name)
+                os.remove(out_path)
+
+        return jsonify({"status": "ok", "parts": uploaded_parts})
+    except Exception as e:
+        return str(e), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.route('/verify/<action>/<path:target_id>')
 def verify(action, target_id):

@@ -1,5 +1,4 @@
 flask
 cloudinary
-requests
 gunicorn
-
+imageio-ffmpeg
