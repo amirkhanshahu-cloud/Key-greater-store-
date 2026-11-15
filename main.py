@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template_string, request, redirect, url_for
+from flask import Flask, render_template_string, request, redirect
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
@@ -13,14 +13,14 @@ cloudinary.config(
     api_secret="Z4NDEGSgXqA5eUdNlRbjL6V-FoE"
 )
 
-PASSWORD_PROTECT = "142014"
+PASSWORD_PROTECT = "809047"
 
 # --- MODERN UI TEMPLATES ---
 HTML_MAIN = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Lite Video Cloud</title>
+    <title>Jio Video Cloud Pro</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         :root {
@@ -42,7 +42,7 @@ HTML_MAIN = """
             padding-bottom: 40px;
         }
         .header {
-            background: rgba(18, 24, 38, 0.9);
+            background: rgba(18, 24, 38, 0.92);
             backdrop-filter: blur(12px);
             padding: 16px 20px;
             border-bottom: 1px solid var(--card-border);
@@ -54,7 +54,7 @@ HTML_MAIN = """
             align-items: center;
         }
         .brand {
-            font-size: 20px;
+            font-size: 19px;
             font-weight: 800;
             background: linear-gradient(90deg, #60a5fa, #a78bfa);
             -webkit-background-clip: text;
@@ -254,7 +254,7 @@ HTML_MAIN = """
 <body>
 
 <div class="header">
-    <span class="brand">Lite Video Cloud</span>
+    <span class="brand">Jio Video Cloud Pro</span>
     <span class="dev-badge">Atif Khan</span>
 </div>
 
@@ -279,13 +279,13 @@ HTML_MAIN = """
         {% for v in videos %}
         <div class="v-card">
             <div class="thumb-wrap">
-                <img src="{{ v.secure_url.rsplit(., 1)[0] + .jpg }}" class="thumb" loading="lazy">
+                <img src="{{ v.thumb_url }}" class="thumb" loading="lazy">
             </div>
             <div class="v-body">
                 <div class="v-title" title="{{ v.public_id }}">{{ v.public_id }}</div>
                 <div class="btn-group">
                     <a href="{{ v.secure_url }}" class="btn btn-play">▶ PLAY</a>
-                    <a href="{{ v.secure_url.replace(/upload/, /upload/fl_attachment/) }}" class="btn btn-dl">⬇ DOWNLOAD</a>
+                    <a href="{{ v.dl_url }}" class="btn btn-dl">⬇ DOWNLOAD</a>
                     <a href="/verify/rename/{{ v.public_id }}" class="btn btn-ren">✎ RENAME</a>
                     <a href="/verify/delete/{{ v.public_id }}" class="btn btn-del">🗑 DELETE</a>
                 </div>
@@ -302,22 +302,22 @@ HTML_MAIN = """
 
 <script>
 async function startUpload() {
-    const file = document.getElementById("fileInput").files[0];
-    const name = document.getElementById("customName").value;
+    const file = document.getElementById('fileInput').files[0];
+    const name = document.getElementById('customName').value;
     if (!file) { alert("File chuniye!"); return; }
 
-    document.getElementById("progCont").style.display = "block";
+    document.getElementById('progCont').style.display = 'block';
     const formData = new FormData();
-    formData.append("file", file);
-    formData.append("upload_preset", "ml_default");
-    if (name) formData.append("public_id", name);
+    formData.append('file', file);
+    formData.append('upload_preset', 'ml_default');
+    if (name) formData.append('public_id', name);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "https://api.cloudinary.com/v1_1/dntmgunma/video/upload");
+    xhr.open('POST', 'https://api.cloudinary.com/v1_1/dntmgunma/video/upload');
     xhr.upload.onprogress = (e) => {
         const percent = Math.round((e.loaded / e.total) * 100);
-        document.getElementById("progBar").style.width = percent + "%";
-        document.getElementById("statusText").innerText = percent + "% Uploading...";
+        document.getElementById('progBar').style.width = percent + '%';
+        document.getElementById('statusText').innerText = percent + '% Uploading...';
     };
     xhr.onload = () => { if (xhr.status == 200) alert("Done!"); location.reload(); };
     xhr.send(formData);
@@ -403,7 +403,7 @@ HTML_VERIFY = """
         <div class="meta">Action: <b>{{ action|upper }}</b><br>Target: {{ target_id }}</div>
         <form action="/process/{{ action }}/{{ target_id }}" method="POST">
             <input type="password" name="pw" placeholder="Enter Admin Password" required>
-            {% if action == "rename" %}
+            {% if action == 'rename' %}
             <input type="text" name="new_name" placeholder="Enter New Video Name" required>
             {% endif %}
             <button type="submit" class="btn">CONFIRM ACTION</button>
@@ -414,37 +414,43 @@ HTML_VERIFY = """
 </html>
 """
 
-@app.route("/")
+@app.route('/')
 def index():
-    query = request.args.get("q", "").strip()
-    cursor = request.args.get("cursor")
+    query = request.args.get('q', '').strip()
+    cursor = request.args.get('cursor')
     try:
         res = cloudinary.api.resources(resource_type="video", type="upload", max_results=10, next_cursor=cursor)
-        videos = res.get("resources", [])
-        next_cursor = res.get("next_cursor")
-        if query:
-            videos = [v for v in videos if query.lower() in v["public_id"].lower()]
+        raw_videos = res.get('resources', [])
+        next_cursor = res.get('next_cursor')
+        videos = []
+        for v in raw_videos:
+            if query and query.lower() not in v['public_id'].lower():
+                continue
+            url = v.get('secure_url', '')
+            v['thumb_url'] = url.rsplit('.', 1)[0] + '.jpg' if '.' in url else url
+            v['dl_url'] = url.replace('/upload/', '/upload/fl_attachment/')
+            videos.append(v)
         return render_template_string(HTML_MAIN, videos=videos, q=query, next_cursor=next_cursor)
     except Exception as e:
         return f"Error loading videos: {e}"
 
-@app.route("/verify/<action>/<path:target_id>")
+@app.route('/verify/<action>/<path:target_id>')
 def verify(action, target_id):
     return render_template_string(HTML_VERIFY, action=action, target_id=target_id)
 
-@app.route("/process/<action>/<path:target_id>", methods=["POST"])
+@app.route('/process/<action>/<path:target_id>', methods=['POST'])
 def process(action, target_id):
-    pw = request.form.get("pw")
+    pw = request.form.get('pw')
     if pw != PASSWORD_PROTECT:
-        return "<h3>Wrong Password! <a href="/">Go Back</a></h3>"
+        return "<h3>Wrong Password! <a href='/'>Go Back</a></h3>"
     
-    if action == "delete":
+    if action == 'delete':
         cloudinary.uploader.destroy(target_id, resource_type="video")
-    elif action == "rename":
-        new_name = request.form.get("new_name").strip()
+    elif action == 'rename':
+        new_name = request.form.get('new_name').strip()
         cloudinary.uploader.rename(target_id, new_name, resource_type="video")
-    return redirect("/")
+    return redirect('/')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
