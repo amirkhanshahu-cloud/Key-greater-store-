@@ -112,6 +112,16 @@ HTML_MAIN = """
             font-weight: 700;
             margin-bottom: 14px;
             color: #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chunk-tag {
+            font-size: 11px;
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            padding: 3px 8px;
+            border-radius: 6px;
         }
         .input-field {
             width: 100%;
@@ -148,6 +158,10 @@ HTML_MAIN = """
             letter-spacing: 0.5px;
             cursor: pointer;
             box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+        }
+        .btn-upload:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
         .progress-container {
             width: 100%;
@@ -265,14 +279,17 @@ HTML_MAIN = """
     </form>
 
     <div class="upload-card">
-        <div class="card-title">Upload New Video</div>
+        <div class="card-title">
+            <span>Upload New Video</span>
+            <span class="chunk-tag">100MB+ Chunk Mode</span>
+        </div>
         <input type="text" id="customName" class="input-field" placeholder="Custom Video Name (optional)">
         <div class="file-box">
             <input type="file" id="fileInput" accept="video/*">
         </div>
         <div class="progress-container" id="progCont"><div class="progress-bar" id="progBar"></div></div>
         <div id="statusText"></div>
-        <button onclick="startUpload()" class="btn-upload">UPLOAD TO CLOUD</button>
+        <button id="upBtn" onclick="startUpload()" class="btn-upload">UPLOAD TO CLOUD</button>
     </div>
 
     <div class="video-grid">
@@ -303,24 +320,64 @@ HTML_MAIN = """
 <script>
 async function startUpload() {
     const file = document.getElementById('fileInput').files[0];
-    const name = document.getElementById('customName').value;
+    const name = document.getElementById('customName').value.trim();
+    const btn = document.getElementById('upBtn');
     if (!file) { alert("File chuniye!"); return; }
 
+    btn.disabled = true;
     document.getElementById('progCont').style.display = 'block';
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_preset', 'ml_default');
-    if (name) formData.append('public_id', name);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', 'https://api.cloudinary.com/v1_1/dntmgunma/video/upload');
-    xhr.upload.onprogress = (e) => {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        document.getElementById('progBar').style.width = percent + '%';
-        document.getElementById('statusText').innerText = percent + '% Uploading...';
-    };
-    xhr.onload = () => { if (xhr.status == 200) alert("Done!"); location.reload(); };
-    xhr.send(formData);
+    const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
+    const totalSize = file.size;
+    const uniqueUploadId = "uqid-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9);
+    let start = 0;
+
+    function uploadChunk(chunkBlob, startByte, endByte) {
+        return new Promise((resolve, reject) => {
+            const formData = new FormData();
+            formData.append('file', chunkBlob, file.name);
+            formData.append('upload_preset', 'ml_default');
+            if (name) formData.append('public_id', name);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', 'https://api.cloudinary.com/v1_1/dntmgunma/video/upload');
+            xhr.setRequestHeader('X-Unique-Upload-Id', uniqueUploadId);
+            xhr.setRequestHeader('Content-Range', `bytes ${startByte}-${endByte - 1}/${totalSize}`);
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const uploadedSoFar = startByte + e.loaded;
+                    const percent = Math.min(100, Math.round((uploadedSoFar / totalSize) * 100));
+                    document.getElementById('progBar').style.width = percent + '%';
+                    document.getElementById('statusText').innerText = percent + '% Uploading (' + (uploadedSoFar / (1024*1024)).toFixed(1) + ' MB / ' + (totalSize / (1024*1024)).toFixed(1) + ' MB)...';
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(JSON.parse(xhr.responseText));
+                } else {
+                    reject(xhr.responseText);
+                }
+            };
+            xhr.onerror = () => reject("Network Error");
+            xhr.send(formData);
+        });
+    }
+
+    try {
+        while (start < totalSize) {
+            const end = Math.min(start + CHUNK_SIZE, totalSize);
+            const chunk = file.slice(start, end);
+            await uploadChunk(chunk, start, end);
+            start = end;
+        }
+        alert("Upload Complete!");
+        location.reload();
+    } catch (err) {
+        alert("Upload Failed: " + err);
+        btn.disabled = false;
+    }
 }
 </script>
 </body>
