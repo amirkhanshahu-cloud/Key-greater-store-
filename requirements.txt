@@ -1,4 +1,4 @@
 flask
-cloudinary
+flask-socketio
+eventlet
 gunicorn
-imageio-ffmpeg

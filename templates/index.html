@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instant Video Call</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: sans-serif; }
+        body { background: #121212; color: white; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        #videos {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 10px;
+            padding: 10px;
+            align-items: center;
+            justify-items: center;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            max-height: 80vh;
+            object-fit: cover;
+            border-radius: 12px;
+            background: #222;
+            border: 2px solid #333;
+        }
+        #localVideo { transform: scaleX(-1); }
+        #controls {
+            padding: 15px;
+            background: #1e1e1e;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+            background: #2d88ff;
+            color: white;
+            transition: 0.2s;
+        }
+        button.off { background: #e53935; }
+        button.active { background: #43a047; }
+    </style>
+</head>
+<body>
+
+    <div id="videos">
+        <video id="localVideo" autoplay playsinline muted></video>
+    </div>
+
+    <div id="controls">
+        <button id="micBtn" onclick="toggleMic()">Mic: ON</button>
+        <button id="camBtn" onclick="toggleCam()">Camera: ON</button>
+        <button id="screenBtn" onclick="toggleScreen()">Share Screen</button>
+        <button onclick="copyLink()">Copy Call Link</button>
+    </div>
+
+    <script>
+        const socket = io();
+        // URL hash (#room) se room name lega, warna default room
+        if (!window.location.hash) {
+            window.location.hash = 'room-' + Math.random().toString(36).substring(2, 7);
+        }
+        const room = window.location.hash.substring(1);
+
+        let localStream;
+        let screenStream;
+        let isSharingScreen = false;
+        const peers = {};
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        async function startCall() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = localStream;
+                socket.emit('join', { room });
+            } catch (err) {
+                alert('Camera/Mic permission dena zaruri hai: ' + err.message);
+            }
+        }
+
+        function createPeer(targetId, initiator) {
+            const pc = new RTCPeerConnection(rtcConfig);
+            peers[targetId] = pc;
+
+            const currentStream = isSharingScreen ? screenStream : localStream;
+            currentStream.getTracks().forEach(track => pc.addTrack(track, currentStream));
+
+            pc.onicecandidate = (e) => {
+                if (e.candidate) {
+                    socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
+                }
+            };
+
+            pc.ontrack = (e) => {
+                let remoteVid = document.getElementById('vid-' + targetId);
+                if (!remoteVid) {
+                    remoteVid = document.createElement('video');
+                    remoteVid.id = 'vid-' + targetId;
+                    remoteVid.autoplay = true;
+                    remoteVid.playsInline = true;
+                    document.getElementById('videos').appendChild(remoteVid);
+                }
+                remoteVid.srcObject = e.streams[0];
+            };
+
+            if (initiator) {
+                pc.createOffer().then(offer => {
+                    pc.setLocalDescription(offer);
+                    socket.emit('offer', { target: targetId, sdp: offer });
+                });
+            }
+            return pc;
+        }
+
+        socket.on('user-joined', (userId) => createPeer(userId, true));
+
+        socket.on('offer', async (data) => {
+            const pc = createPeer(data.sender, false);
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('answer', { target: data.sender, sdp: answer });
+        });
+
+        socket.on('answer', async (data) => {
+            if (peers[data.sender]) {
+                await peers[data.sender].setRemoteDescription(new RTCSessionDescription(data.sdp));
+            }
+        });
+
+        socket.on('ice-candidate', async (data) => {
+            if (peers[data.sender]) {
+                await peers[data.sender].addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        });
+
+        socket.on('user-left', (userId) => {
+            if (peers[userId]) {
+                peers[userId].close();
+                delete peers[userId];
+            }
+            const vid = document.getElementById('vid-' + userId);
+            if (vid) vid.remove();
+        });
+
+        // Mic Toggle
+        function toggleMic() {
+            const audioTrack = localStream.getAudioTracks()[0];
+            audioTrack.enabled = !audioTrack.enabled;
+            const btn = document.getElementById('micBtn');
+            btn.innerText = audioTrack.enabled ? 'Mic: ON' : 'Mic: OFF';
+            btn.classList.toggle('off', !audioTrack.enabled);
+        }
+
+        // Camera Toggle
+        function toggleCam() {
+            const videoTrack = localStream.getVideoTracks()[0];
+            videoTrack.enabled = !videoTrack.enabled;
+            const btn = document.getElementById('camBtn');
+            btn.innerText = videoTrack.enabled ? 'Camera: ON' : 'Camera: OFF';
+            btn.classList.toggle('off', !videoTrack.enabled);
+        }
+
+        // Screen Share Toggle
+        async function toggleScreen() {
+            const btn = document.getElementById('screenBtn');
+            if (!isSharingScreen) {
+                try {
+                    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                    const screenTrack = screenStream.getVideoTracks()[0];
+                    
+                    replaceVideoTrack(screenTrack);
+                    document.getElementById('localVideo').srcObject = screenStream;
+                    document.getElementById('localVideo').style.transform = 'none';
+                    
+                    isSharingScreen = true;
+                    btn.innerText = 'Stop Sharing';
+                    btn.classList.add('active');
+
+                    screenTrack.onended = () => stopScreenShare();
+                } catch (err) {
+                    console.log('Screen share cancelled');
+                }
+            } else {
+                stopScreenShare();
+            }
+        }
+
+        function stopScreenShare() {
+            if (screenStream) {
+                screenStream.getTracks().forEach(t => t.stop());
+            }
+            const camTrack = localStream.getVideoTracks()[0];
+            replaceVideoTrack(camTrack);
+            document.getElementById('localVideo').srcObject = localStream;
+            document.getElementById('localVideo').style.transform = 'scaleX(-1)';
+            isSharingScreen = false;
+            const btn = document.getElementById('screenBtn');
+            btn.innerText = 'Share Screen';
+            btn.classList.remove('active');
+        }
+
+        function replaceVideoTrack(newTrack) {
+            for (let id in peers) {
+                const sender = peers[id].getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) sender.replaceTrack(newTrack);
+            }
+        }
+
+        function copyLink() {
+            navigator.clipboard.writeText(window.location.href);
+            alert('Call link copy ho gaya! Dusre ko bhejein.');
+        }
+
+        startCall();
+    </script>
+</body>
+</html>
