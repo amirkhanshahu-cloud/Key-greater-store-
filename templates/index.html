@@ -11,7 +11,7 @@
         #videos {
             flex: 1;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 10px;
             padding: 10px;
             align-items: center;
@@ -20,7 +20,7 @@
         video {
             width: 100%;
             height: 100%;
-            max-height: 80vh;
+            max-height: 75vh;
             object-fit: cover;
             border-radius: 12px;
             background: #222;
@@ -28,23 +28,22 @@
         }
         #localVideo { transform: scaleX(-1); }
         #controls {
-            padding: 15px;
+            padding: 12px;
             background: #1e1e1e;
             display: flex;
             justify-content: center;
-            gap: 15px;
+            gap: 10px;
             flex-wrap: wrap;
         }
         button {
-            padding: 12px 20px;
+            padding: 10px 16px;
             border: none;
             border-radius: 8px;
-            font-size: 15px;
+            font-size: 14px;
             font-weight: bold;
             cursor: pointer;
             background: #2d88ff;
             color: white;
-            transition: 0.2s;
         }
         button.off { background: #e53935; }
         button.active { background: #43a047; }
@@ -60,19 +59,18 @@
         <button id="micBtn" onclick="toggleMic()">Mic: ON</button>
         <button id="camBtn" onclick="toggleCam()">Camera: ON</button>
         <button id="screenBtn" onclick="toggleScreen()">Share Screen</button>
-        <button onclick="copyLink()">Copy Call Link</button>
+        <button onclick="copyLink()">Copy Link</button>
     </div>
 
     <script>
         const socket = io();
-        // URL hash (#room) se room name lega, warna default room
         if (!window.location.hash) {
             window.location.hash = 'room-' + Math.random().toString(36).substring(2, 7);
         }
         const room = window.location.hash.substring(1);
 
-        let localStream;
-        let screenStream;
+        let localStream = null;
+        let screenStream = null;
         let isSharingScreen = false;
         const peers = {};
 
@@ -87,10 +85,12 @@
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 document.getElementById('localVideo').srcObject = localStream;
-                socket.emit('join', { room });
             } catch (err) {
-                alert('Camera/Mic permission dena zaruri hai: ' + err.message);
+                console.warn('Camera busy/blocked, joining in view-only mode:', err);
+                document.getElementById('camBtn').innerText = 'Camera: Busy';
+                document.getElementById('camBtn').classList.add('off');
             }
+            socket.emit('join', { room });
         }
 
         function createPeer(targetId, initiator) {
@@ -98,7 +98,13 @@
             peers[targetId] = pc;
 
             const currentStream = isSharingScreen ? screenStream : localStream;
-            currentStream.getTracks().forEach(track => pc.addTrack(track, currentStream));
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => pc.addTrack(track, currentStream));
+            } else {
+                // Agar camera busy hai toh bhi video/audio receive karne ke liye transceiver add karein
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                pc.addTransceiver('audio', { direction: 'recvonly' });
+            }
 
             pc.onicecandidate = (e) => {
                 if (e.candidate) {
@@ -158,25 +164,26 @@
             if (vid) vid.remove();
         });
 
-        // Mic Toggle
         function toggleMic() {
+            if (!localStream) return;
             const audioTrack = localStream.getAudioTracks()[0];
+            if (!audioTrack) return;
             audioTrack.enabled = !audioTrack.enabled;
             const btn = document.getElementById('micBtn');
             btn.innerText = audioTrack.enabled ? 'Mic: ON' : 'Mic: OFF';
             btn.classList.toggle('off', !audioTrack.enabled);
         }
 
-        // Camera Toggle
         function toggleCam() {
+            if (!localStream) return;
             const videoTrack = localStream.getVideoTracks()[0];
+            if (!videoTrack) return;
             videoTrack.enabled = !videoTrack.enabled;
             const btn = document.getElementById('camBtn');
             btn.innerText = videoTrack.enabled ? 'Camera: ON' : 'Camera: OFF';
             btn.classList.toggle('off', !videoTrack.enabled);
         }
 
-        // Screen Share Toggle
         async function toggleScreen() {
             const btn = document.getElementById('screenBtn');
             if (!isSharingScreen) {
@@ -205,10 +212,12 @@
             if (screenStream) {
                 screenStream.getTracks().forEach(t => t.stop());
             }
-            const camTrack = localStream.getVideoTracks()[0];
-            replaceVideoTrack(camTrack);
-            document.getElementById('localVideo').srcObject = localStream;
-            document.getElementById('localVideo').style.transform = 'scaleX(-1)';
+            if (localStream) {
+                const camTrack = localStream.getVideoTracks()[0];
+                replaceVideoTrack(camTrack);
+                document.getElementById('localVideo').srcObject = localStream;
+                document.getElementById('localVideo').style.transform = 'scaleX(-1)';
+            }
             isSharingScreen = false;
             const btn = document.getElementById('screenBtn');
             btn.innerText = 'Share Screen';
@@ -224,7 +233,7 @@
 
         function copyLink() {
             navigator.clipboard.writeText(window.location.href);
-            alert('Call link copy ho gaya! Dusre ko bhejein.');
+            alert('Call link copy ho gaya!');
         }
 
         startCall();
